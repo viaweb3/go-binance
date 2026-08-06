@@ -3,10 +3,10 @@ package websocket
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"log"
-	"net"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -37,16 +37,10 @@ func TestClient(t *testing.T) {
 }
 
 func (s *clientTestSuite) TestReadWriteSync() {
-	stopCh := make(chan struct{})
-	readyCh := make(chan struct{})
-	go func() {
-		startWsTestServer(stopCh, readyCh)
-	}()
-	defer func() {
-		stopCh <- struct{}{}
-	}()
+	server := httptest.NewServer(http.HandlerFunc(wsHandler))
+	defer server.Close()
 
-	<-readyCh
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/ws"
 
 	conn, err := NewConnection(func() (*websocket.Conn, error) {
 		Dialer := websocket.Dialer{
@@ -55,7 +49,7 @@ func (s *clientTestSuite) TestReadWriteSync() {
 			EnableCompression: false,
 		}
 
-		c, _, err := Dialer.Dial("ws://localhost:8080/ws", nil)
+		c, _, err := Dialer.Dial(wsURL, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -233,34 +227,4 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
-}
-
-func startWsTestServer(stopCh chan struct{}, readyCh chan struct{}) {
-	server := &http.Server{}
-
-	http.HandleFunc("/ws", wsHandler)
-	log.Println("WebSocket server started on :8080")
-
-	go func() {
-		lis, err := net.Listen("tcp", "localhost:8080")
-		if err != nil {
-			log.Fatalf("WebSocket server error: %v", err)
-		}
-		close(readyCh)
-
-		if err := server.Serve(lis); !errors.Is(err, http.ErrServerClosed) {
-			log.Fatalf("WebSocket server error: %v", err)
-		}
-		log.Println("Stopped serving new connections.")
-	}()
-
-	<-stopCh
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	if err := server.Shutdown(ctx); err != nil {
-		log.Fatalf("WebSocket shutdown error: %v", err)
-	}
-	log.Println("Graceful shutdown complete.")
 }
