@@ -1161,22 +1161,33 @@ func WsAnnouncementServe(params WsAnnouncementParam, handler WsAnnouncementHandl
 			return
 		}
 
-		if event.Type != "DATA" {
-			errHandler(errors.New("type is not DATA: " + event.Type))
+		switch event.Type {
+		case "COMMAND":
+			switch event.Data {
+			case "SUCCESS":
+				return
+			default:
+				errHandler(errors.New("command failed: " + event.Data))
+				return
+			}
+		case "DATA":
+			switch event.Topic {
+			case "com_announcement_en":
+				e := new(WsAnnouncementEvent)
+				if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
+					errHandler(err)
+					return
+				}
+				handler(e)
+			default:
+				errHandler(errors.New("unsupported topic: " + event.Topic))
+				return
+			}
+		default:
+			errHandler(errors.New("unsupported type: " + event.Type))
 			return
 		}
 
-		if event.Topic != "com_announcement_en" {
-			errHandler(errors.New("topic is not com_announcement_en: " + event.Topic))
-			return
-		}
-
-		e := new(WsAnnouncementEvent)
-		if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
-			errHandler(err)
-			return
-		}
-		handler(e)
 	}
 	return wsServeWithConnHandler(cfg, wsHandler, errHandler, keepAliveWithPing(30*time.Second, WebsocketTimeout))
 }
