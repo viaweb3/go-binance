@@ -109,8 +109,6 @@ var wsServeWithConnHandler = func(cfg *WsConfig, handler WsHandler, errHandler E
 // keepAliveWithPing Keepalive by actively sending ping messages
 func keepAliveWithPing(interval time.Duration, pongTimeout time.Duration) ConnHandler {
 	return func(ctx context.Context, c *websocket.Conn) {
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
 
 		var lastResponse int64
 		atomic.StoreInt64(&lastResponse, time.Now().Unix())
@@ -119,19 +117,25 @@ func keepAliveWithPing(interval time.Duration, pongTimeout time.Duration) ConnHa
 			return nil
 		})
 
-		lastPongTicker := time.NewTicker(pongTimeout)
-		defer lastPongTicker.Stop()
-
 		go func() {
+			// pingTicker drives outgoing PING frames at the configured interval.
+			pingTicker := time.NewTicker(interval)
+			defer pingTicker.Stop()
+
+			// pongTimeoutTicker periodically checks that a PONG has been received
+			// within the timeout window; if not, the connection is presumed dead.
+			pongTimeoutTicker := time.NewTicker(pongTimeout)
+			defer pongTimeoutTicker.Stop()
+
 			for {
 				select {
 				case <-ctx.Done():
 					return
-				case <-ticker.C:
+				case <-pingTicker.C:
 					if err := c.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(WebsocketPingTimeout)); err != nil {
 						return
 					}
-				case <-lastPongTicker.C:
+				case <-pongTimeoutTicker.C:
 					if time.Since(time.Unix(atomic.LoadInt64(&lastResponse), 0)) > pongTimeout {
 						c.Close()
 						return
@@ -144,9 +148,6 @@ func keepAliveWithPing(interval time.Duration, pongTimeout time.Duration) ConnHa
 
 // keepAliveWithPong Keepalive by responding to ping messages
 func keepAliveWithPong(ctx context.Context, c *websocket.Conn, timeout time.Duration) {
-	ticker := time.NewTicker(timeout)
-	defer ticker.Stop()
-
 	var lastResponse int64
 	atomic.StoreInt64(&lastResponse, time.Now().Unix())
 
@@ -167,11 +168,15 @@ func keepAliveWithPong(ctx context.Context, c *websocket.Conn, timeout time.Dura
 	})
 
 	go func() {
+		// pingTimeoutTicker MUST live inside this goroutine; see keepAliveWithPing.
+		// Creating it in the outer function stops it immediately on return.
+		pingTimeoutTicker := time.NewTicker(timeout)
+		defer pingTimeoutTicker.Stop()
 		for {
 			select {
 			case <-ctx.Done():
 				return
-			case <-ticker.C:
+			case <-pingTimeoutTicker.C:
 				if time.Since(time.Unix(atomic.LoadInt64(&lastResponse), 0)) > timeout {
 					c.Close()
 					return
