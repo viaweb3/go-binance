@@ -1720,9 +1720,51 @@ func (s *websocketServiceTestSuite) TestWsUserDataServeMarginCall() {
 					IsolatedWallet:            "0",
 					MarkPrice:                 "187.17127",
 					UnrealizedPnL:             "-1.166074",
-					MaintenanceMarginRequired: "1.614445",
-				},
-			}},
+				MaintenanceMarginRequired: "1.614445",
+			},
+		}},
+	}
+	s.testWsUserDataServe(data, expectedEvent)
+}
+
+// TestWsUserDataServeMarginCallStringPositions reproduces issue #687: the
+// exchange sometimes sends the MARGIN_CALL position list `p` as a JSON string
+// (e.g. "null") instead of an array, which used to fail decoding with
+// "cannot unmarshal string into Go struct field .p of type []futures.WsPosition".
+func (s *websocketServiceTestSuite) TestWsUserDataServeMarginCallStringPositions() {
+	data := []byte(`{
+		"e":"MARGIN_CALL",
+		"E":1587727187525,
+		"cw":"3.16812045",
+		"p":"null"
+	}`)
+	expectedEvent := &WsUserDataEvent{
+		Event: "MARGIN_CALL",
+		Time:  1587727187525,
+		WsUserDataMarginCall: WsUserDataMarginCall{
+			CrossWalletBalance:  "3.16812045",
+			MarginCallPositions: nil,
+		},
+	}
+	s.testWsUserDataServe(data, expectedEvent)
+}
+
+// TestWsUserDataServeMarginCallEmptyStringPositions covers the case where `p`
+// is an empty JSON string rather than "null".
+func (s *websocketServiceTestSuite) TestWsUserDataServeMarginCallEmptyStringPositions() {
+	data := []byte(`{
+		"e":"MARGIN_CALL",
+		"E":1587727187525,
+		"cw":"3.16812045",
+		"p":""
+	}`)
+	expectedEvent := &WsUserDataEvent{
+		Event: "MARGIN_CALL",
+		Time:  1587727187525,
+		WsUserDataMarginCall: WsUserDataMarginCall{
+			CrossWalletBalance:  "3.16812045",
+			MarginCallPositions: nil,
+		},
 	}
 	s.testWsUserDataServe(data, expectedEvent)
 }

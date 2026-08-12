@@ -74,8 +74,8 @@ type WsUserDataAccountUpdate struct {
 }
 
 type WsUserDataMarginCall struct {
-	CrossWalletBalance  string       `json:"cw"`
-	MarginCallPositions []WsPosition `json:"p"`
+	CrossWalletBalance  string          `json:"cw"`
+	MarginCallPositions WsPositionSlice `json:"p"`
 }
 
 type WsUserDataOrderTradeUpdate struct {
@@ -142,6 +142,23 @@ type WsBalance struct {
 	Balance            string `json:"wb"`
 	CrossWalletBalance string `json:"cw"`
 	ChangeBalance      string `json:"bc"`
+}
+
+// WsPositionSlice is a slice of WsPosition that tolerates the exchange
+// occasionally sending the position list as a JSON string (e.g. "null" or "")
+// instead of an array on a MARGIN_CALL event. See issue #687.
+type WsPositionSlice []WsPosition
+
+func (s *WsPositionSlice) UnmarshalJSON(data []byte) error {
+	if len(data) > 0 && data[0] == '"' {
+		return nil
+	}
+	var positions []WsPosition
+	if err := json.Unmarshal(data, &positions); err != nil {
+		return err
+	}
+	*s = positions
+	return nil
 }
 
 // WsPosition define position

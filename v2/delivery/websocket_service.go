@@ -674,7 +674,7 @@ type WsUserDataEvent struct {
 	Time                int64              `json:"E"`
 	Alias               string             `json:"i"`
 	CrossWalletBalance  string             `json:"cw"`
-	MarginCallPositions []WsPosition       `json:"p"`
+	MarginCallPositions WsPositionSlice    `json:"p"`
 	TransactionTime     int64              `json:"T"`
 	AccountUpdate       WsAccountUpdate    `json:"a"`
 	OrderTradeUpdate    WsOrderTradeUpdate `json:"o"`
@@ -685,10 +685,10 @@ func (e *WsUserDataEvent) UnmarshalJSON(data []byte) error {
 		Event               UserDataEventType  `json:"e"`
 		Time                any                `json:"E"`
 		Alias               string             `json:"i"`
-		CrossWalletBalance  string             `json:"cw"`
-		MarginCallPositions []WsPosition       `json:"p"`
-		TransactionTime     int64              `json:"T"`
-		AccountUpdate       WsAccountUpdate    `json:"a"`
+		CrossWalletBalance  string          `json:"cw"`
+		MarginCallPositions WsPositionSlice `json:"p"`
+		TransactionTime     int64           `json:"T"`
+		AccountUpdate       WsAccountUpdate `json:"a"`
 		OrderTradeUpdate    WsOrderTradeUpdate `json:"o"`
 	}
 	if err := json.Unmarshal(data, &tmp); err != nil {
@@ -730,6 +730,23 @@ type WsBalance struct {
 	Balance            string `json:"wb"`
 	CrossWalletBalance string `json:"cw"`
 	BalanceChange      string `json:"bc"`
+}
+
+// WsPositionSlice is a slice of WsPosition that tolerates the exchange
+// occasionally sending the position list as a JSON string (e.g. "null" or "")
+// instead of an array on a MARGIN_CALL event. See issue #687.
+type WsPositionSlice []WsPosition
+
+func (s *WsPositionSlice) UnmarshalJSON(data []byte) error {
+	if len(data) > 0 && data[0] == '"' {
+		return nil
+	}
+	var positions []WsPosition
+	if err := json.Unmarshal(data, &positions); err != nil {
+		return err
+	}
+	*s = positions
+	return nil
 }
 
 // WsPosition define position
