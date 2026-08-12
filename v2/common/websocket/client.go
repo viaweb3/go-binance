@@ -48,8 +48,8 @@ type messageId struct {
 type client struct {
 	Debug                       bool
 	logger                      *log.Logger
-	conn                        Connection
-	connMu                      sync.Mutex
+	conn                        atomic.Value // stores a Connection
+	connMu                      sync.Mutex   // serializes writes (Write/WriteSync)
 	reconnectSignal             chan struct{}
 	connectionEstablishedSignal chan struct{}
 	requestsList                RequestList
@@ -65,14 +65,13 @@ func (c *client) debug(format string, v ...any) {
 }
 
 func (c *client) Close() error {
-	return c.conn.Close()
+	return c.conn.Load().(Connection).Close()
 }
 
 // NewClient init client
 func NewClient(conn Connection) (Client, error) {
 	client := &client{
 		logger:                      log.New(os.Stderr, "Binance-golang ", log.LstdFlags),
-		conn:                        conn,
 		connMu:                      sync.Mutex{},
 		reconnectSignal:             make(chan struct{}, 1),
 		connectionEstablishedSignal: make(chan struct{}, 1),
@@ -80,6 +79,7 @@ func NewClient(conn Connection) (Client, error) {
 		readErrChan:                 make(chan error, 1),
 		readC:                       make(chan []byte),
 	}
+	client.conn.Store(conn)
 
 	go client.handleReconnect()
 	go client.read()
@@ -106,7 +106,7 @@ func (c *client) Write(id string, data []byte) error {
 		return ErrorWsIdAlreadySent
 	}
 
-	if err := c.conn.WriteMessage(websocket.TextMessage, data); err != nil {
+	if err := c.conn.Load().(Connection).WriteMessage(websocket.TextMessage, data); err != nil {
 		c.debug("write: unable to write message into websocket conn '%v'", err)
 		return err
 	}
@@ -122,7 +122,7 @@ func (c *client) WriteSync(id string, data []byte, timeout time.Duration) ([]byt
 	c.connMu.Lock()
 	defer c.connMu.Unlock()
 
-	if err := c.conn.WriteMessage(websocket.TextMessage, data); err != nil {
+	if err := c.conn.Load().(Connection).WriteMessage(websocket.TextMessage, data); err != nil {
 		c.debug("write sync: unable to write message into websocket conn '%v'", err)
 		return nil, err
 	}
@@ -178,7 +178,8 @@ func (c *client) read() {
 
 	for {
 		c.debug("read: waiting for message")
-		_, message, err := c.conn.ReadMessage()
+		conn := c.conn.Load().(Connection)
+		_, message, err := conn.ReadMessage()
 		if err != nil {
 			c.debug("read: error reading message '%v'", err)
 			c.reconnectSignal <- struct{}{}
@@ -248,9 +249,10 @@ func (c *client) handleReconnect() {
 
 		b.Reset()
 
-		c.connMu.Lock()
-		c.conn = conn
-		c.connMu.Unlock()
+		// Swap the connection atomically so the concurrent reader
+		// (client.read) never observes a torn pointer. Written together
+		// with the synchronized reads in read()/Write()/WriteSync()/Close().
+		c.conn.Store(conn)
 
 		c.debug("reconnect: connected")
 		c.connectionEstablishedSignal <- struct{}{}
@@ -261,7 +263,7 @@ func (c *client) handleReconnect() {
 func (c *client) startReconnect(b *backoff.Backoff) Connection {
 	for {
 		atomic.AddInt64(&c.reconnectCount, 1)
-		conn, err := c.conn.RestoreConnection()
+		conn, err := c.conn.Load().(Connection).RestoreConnection()
 		if err != nil {
 			delay := b.Duration()
 			c.debug("reconnect: error while reconnecting. try in %s", delay.Round(time.Millisecond))
@@ -352,6 +354,16 @@ func NewConnection(
 	}
 
 	if isKeepAliveNeeded {
+		// Register the pong handler synchronously, before the read goroutine
+		// starts. Per the gorilla/websocket contract, connection handlers
+		// (SetPingHandler/SetPongHandler) must not be modified concurrently
+		// with reads; registering here (instead of inside the keepAlive
+		// goroutine) avoids the data race reported in
+		// https://github.com/ccxt/go-binance/issues/800.
+		wsConn.conn.SetPongHandler(func(msg string) error {
+			wsConn.updateLastResponse()
+			return nil
+		})
 		go wsConn.keepAlive(keepaliveTimeout)
 	}
 
@@ -398,11 +410,6 @@ func (c *connection) keepAlive(timeout time.Duration) {
 	ticker := time.NewTicker(timeout)
 
 	c.updateLastResponse()
-
-	c.conn.SetPongHandler(func(msg string) error {
-		c.updateLastResponse()
-		return nil
-	})
 
 	go func() {
 		defer ticker.Stop()

@@ -228,3 +228,43 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 }
+
+// TestConnectionHandlerReadRace is a regression test for
+// https://github.com/ccxt/go-binance/issues/800. The keep-alive pong handler
+// used to be registered from the keepAlive goroutine, which raced with the
+// read loop calling ReadMessage on the same *websocket.Conn (both touch the
+// gorilla connection's handler fields). Run with -race: the buggy version is
+// caught by the race detector, the fixed version passes cleanly.
+func TestConnectionHandlerReadRace(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(wsHandler))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/ws"
+
+	for i := 0; i < 10; i++ {
+		conn, err := NewConnection(func() (*websocket.Conn, error) {
+			Dialer := websocket.Dialer{
+				Proxy:             http.ProxyFromEnvironment,
+				HandshakeTimeout:  45 * time.Second,
+				EnableCompression: false,
+			}
+			c, _, err := Dialer.Dial(wsURL, nil)
+			if err != nil {
+				return nil, err
+			}
+			return c, nil
+		}, true, 10*time.Second)
+		if err != nil {
+			t.Fatalf("NewConnection: %v", err)
+		}
+
+		if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"id":"race","method":"m"}`)); err != nil {
+			t.Fatalf("WriteMessage: %v", err)
+		}
+		// Concurrent read against the keepAlive goroutine that manages the
+		// connection handler.
+		_, _, _ = conn.ReadMessage()
+
+		_ = conn.Close()
+	}
+}
